@@ -13,6 +13,6 @@ CONFIG = {
 	"gpio": {
 		"power_led": 4,
 		"power_sw": 5,
-		"reset": 16
+		"reset_sw": 16
 	}
 }

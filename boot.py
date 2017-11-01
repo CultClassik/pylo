@@ -5,6 +5,7 @@ import ubinascii
 import webrepl
 import network
 from machine import Pin
+from umqtt.simple import MQTTClient
 from config import CONFIG
 
 def startup():
@@ -27,51 +28,91 @@ def startup():
 	print("MAC Address: " + mac)
 	print('WiFi config:', sta_if.ifconfig())
 
-	# start the webrepl
 	webrepl.start()
 	
-	# connect to the mq
-	mqtt_go(CONFIG)
+	# Set up the power led sensor gpio pin
+	pin_sensor()
+	
+	# wait X seconds before connecting to mqtt broker to ensure we're good to go with wifi connection
+	print("Preparing to connect to MQTT broker..")
+	time.sleep(3)
+	
+	mqtt_go()
 
-def mqtt_go(CONFIG):
-	from umqtt.robust import MQTTClient
+
+def mqtt_go():
+	global client
+	print('Connecting to {} as {}'.format(CONFIG['mqtt']['broker'], CONFIG['mqtt']['client_id']))
 	client = MQTTClient(CONFIG['mqtt']['client_id'], CONFIG['mqtt']['broker'])
-	print("Connected to {}".format(CONFIG['mqtt']['broker']))
 	client.DEBUG = True
 	client.set_callback(mqtt_command)
-	client.connect()
-	print ("Subscribing to topic: " + CONFIG['mqtt']['topic_sub'].decode())
+	client.set_last_will(CONFIG['mqtt']['topic_will'], 'OFF', True, 2)
+	client.connect(clean_session=True)
 	client.subscribe(CONFIG['mqtt']['topic_sub'])
-	# Set up the power led sensor gpio pin
-	pin_sensor(CONFIG['gpio']['power_led'])
-	# Loop forever and work it
+
+	# Loop forever go to work, lots of error checking needed to handle broker outages
 	while True:
-		# Publish power status
-		mqtt_status(client, CONFIG['mqtt']['topic_pub'])
-		# Check for commands published to this device in mqtt
-		client.check_msg()
-		time.sleep(3)
-	
+		try:
+			mqtt_status(CONFIG['mqtt']['topic_pub'])
+		except:
+			print("Error on PUBLISH")
+			mqtt_conn()
+
+		try:
+			client.check_msg()
+		except:
+			print("Error on SUBSCRIBE")
+			#mqtt_conn()
+		else:
+			time.sleep(2)
+
 	client.disconnect()
 
-def mqtt_status(client, topic):
+	
+def mqtt_conn():
+	time.sleep(3)
+	try:
+		client.connect(clean_session=False)
+	except:
+		print("Error on conn")
+	else:
+		client.subscribe(CONFIG['mqtt']['topic_sub'])
+
+
+def mqtt_status(topic):
 	# read power led status from pc with gpio here
-	my_status = sensor_pin.value()
-	print ("Publishing " + str(my_status) + " to topic: " + topic.decode())
-	client.publish(topic, bytes(my_status))
+	pwr_status = sensor_pin.value()
 	
-def mqtt_command(topic, msg):
-	print("mqtt message received")
-	print(topic, '::', msg)
+	if pwr_status == 0:
+		status = "ON"
+	else:
+		status = "OFF"
 
-def pin_sensor(my_pin):
+	print("Publishing " + status + " to topic: " + topic)
+	client.publish(topic, status)
+	
+	
+def mqtt_command(topic, message):
+	msg = message.decode()
+	print('Received message {} on topic {}'.format(msg, topic.decode()))
+		
+	if msg == "RESET":
+		pin = machine.Pin(CONFIG['gpio']['reset_sw'], machine.Pin.OUT)
+		print("Sending reset.")
+	elif (msg == "ON") or (msg == "OFF"):
+		pin = machine.Pin(CONFIG['gpio']['power_sw'], machine.Pin.OUT)
+		print("Sending power {}".format(msg))
+	else:
+		print("Unknown command, ignoring.")
+		
+	pin.value(1)
+	time.sleep(2)
+	pin.value(0)
+
+def pin_sensor():
 	global sensor_pin
-	sensor_pin = Pin(my_pin, Pin.IN, Pin.PULL_UP)
+	sensor_pin = Pin(CONFIG['gpio']['power_led'], Pin.IN, Pin.PULL_UP)
 
-def gpio_ctl(pin):
-	# still need to implement gpio outputs to optocouplers to manipulate pc power and reset buttons
-	return False
-	
 	
 if __name__ == '__main__':
 	import esp
