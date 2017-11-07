@@ -46,68 +46,96 @@ def mqtt_go():
 	client = MQTTClient(CONFIG['mqtt']['client_id'], CONFIG['mqtt']['broker'])
 	client.DEBUG = True
 	client.set_callback(mqtt_command)
-	client.set_last_will(CONFIG['mqtt']['topic_will'], 'OFF', True, 2)
+	client.set_last_will(CONFIG['mqtt']['topic_status'], 'offline', True, 0)
 	client.connect(clean_session=True)
-	client.subscribe(CONFIG['mqtt']['topic_sub'])
+	
+	state = None
+	
+	try:
+		# Publish the device status 
+		print('Publishing ONLINE to topic: {}'.format(CONFIG['mqtt']['topic_status']))
+		client.publish(CONFIG['mqtt']['topic_status'], "online")
+		# Publish the pc power state
+		state = mqtt_status(CONFIG['mqtt']['topic_state'])
+		print('Publishing {} to topic: {}'.format(state, CONFIG['mqtt']['topic_state']))
+		client.publish(CONFIG['mqtt']['topic_state'], state)
+	except:
+		print("Error on INIT")
 
+	client.subscribe(CONFIG['mqtt']['topic_cmd'])
+	
 	# Loop forever go to work, lots of error checking needed to handle broker outages
 	while True:
+		# If the pc power state has changed, publish it
+		if not state == mqtt_status(CONFIG['mqtt']['topic_state']):
+			#print('State changed from {} to {}'.format(state, mqtt_status(CONFIG['mqtt']['topic_state'])))
+			try:
+				state = mqtt_status(CONFIG['mqtt']['topic_state'])
+				print("Publishing {} to topic: {}".format(state, CONFIG['mqtt']['topic_state']))
+				client.publish(CONFIG['mqtt']['topic_state'], state, True, 0)
+			except:
+				print("Error publishing power state")
+			
 		try:
-			mqtt_status(CONFIG['mqtt']['topic_pub'])
-		except:
-			print("Error on PUBLISH")
-			mqtt_conn()
-
-		try:
+			print("Checking for messages..")
 			client.check_msg()
 		except:
 			print("Error on SUBSCRIBE")
-			#mqtt_conn()
+			time.sleep(4)
+			mqtt_conn()
 		else:
-			time.sleep(2)
+			time.sleep(1)
 
 	client.disconnect()
 
 	
-def mqtt_conn():
+def mqtt_conn(clean_session=False):
 	time.sleep(3)
 	try:
-		client.connect(clean_session=False)
+		client.connect(clean_session)
 	except:
 		print("Error on conn")
 	else:
-		client.subscribe(CONFIG['mqtt']['topic_sub'])
+		client.subscribe(CONFIG['mqtt']['topic_cmd'])
 
 
-def mqtt_status(topic):
-	# read power led status from pc with gpio here
-	pwr_status = sensor_pin.value()
+def mqtt_status(topic, message=None):
+	if message == None:
+		# read power led status from pc with gpio here
+		pwr_status = sensor_pin.value()
 	
-	if pwr_status == 0:
-		status = "ON"
-	else:
-		status = "OFF"
-
-	print("Publishing " + status + " to topic: " + topic)
-	client.publish(topic, status)
+		if pwr_status == 0:
+			msg = "ON"
+		else:
+			msg = "OFF"
+	
+	# Return the power status, optionally to be used by calling code
+	return msg
 	
 	
 def mqtt_command(topic, message):
 	msg = message.decode()
 	print('Received message {} on topic {}'.format(msg, topic.decode()))
-		
+	pin = None
+	
 	if msg == "RESET":
 		pin = machine.Pin(CONFIG['gpio']['reset_sw'], machine.Pin.OUT)
 		print("Sending reset.")
 	elif (msg == "ON") or (msg == "OFF"):
-		pin = machine.Pin(CONFIG['gpio']['power_sw'], machine.Pin.OUT)
 		print("Sending power {}".format(msg))
+		pin = machine.Pin(CONFIG['gpio']['power_sw'], machine.Pin.OUT)
 	else:
 		print("Unknown command, ignoring.")
-		
-	pin.value(1)
-	time.sleep(2)
-	pin.value(0)
+	
+	if not pin == None:
+		pin.value(1)
+		time.sleep(2)
+		pin.value(0)
+		state = mqtt_status(CONFIG['mqtt']['topic_state'])
+		client.publish(CONFIG['mqtt']['topic_state'], state)
+		return state
+	else:
+		return pin
 
 def pin_sensor():
 	global sensor_pin
@@ -118,4 +146,3 @@ if __name__ == '__main__':
 	import esp
 	esp.osdebug(None)
 	startup()
-	
